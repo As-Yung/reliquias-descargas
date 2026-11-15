@@ -1,0 +1,308 @@
+name: Publicar el juego (Windows, Android y Batocera)
+
+# Compila el instalador .exe, la app de Android (.apk + contenido web para la actualización
+# automática) y la versión de Batocera a partir del código del repo privado
+# As-Yung/furia_ninja_propio, y los publica como release de ESTE repo público. Corre aquí y no en
+# el repo privado porque en los repos públicos GitHub Actions no gasta minutos.
+#
+# - Cada 30 minutos mira si el main del juego tiene una versión del launcher que aún no está
+#   publicada; si no, termina en segundos. También se puede lanzar a mano (Run workflow).
+# - El código se lee con el secreto CODIGO_TOKEN (llave de solo lectura del repo del juego). Los
+#   secretos nunca se muestran en los registros, y el código no se imprime: solo se compila.
+# - Guías: docs/DISTRIBUCION.md, docs/ANDROID.md y docs/BATOCERA.md en el repo del juego.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+env:
+  CODE_REPO: As-Yung/furia_ninja_propio
+  RELEASES_REPO: ${{ github.repository }}
+
+jobs:
+  # Mira, sin compilar nada, si en el main del repo del juego hay una versión que aún no está
+  # publicada aquí. Si no la hay, termina en segundos y no corre nada más.
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.d.outputs.version }}
+      sha: ${{ steps.d.outputs.sha }}
+      publish: ${{ steps.d.outputs.publish }}
+      mode: ${{ steps.d.outputs.mode }}
+    steps:
+      - name: ¿Hay versión nueva?
+        id: d
+        env:
+          CODE_TOKEN: ${{ secrets.CODIGO_TOKEN }}
+          FIRMA: ${{ secrets.ANDROID_FIRMA }}
+          FIRMA_CLAVE: ${{ secrets.ANDROID_FIRMA_CLAVE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Sin los tres secretos no se publica nada (sin la firma, la release quedaría incompleta
+          # y se intentaría de nuevo cada media hora).
+          if [ -z "$CODE_TOKEN" ] || [ -z "$FIRMA" ] || [ -z "$FIRMA_CLAVE" ]; then
+            echo "::warning::Faltan secretos (CODIGO_TOKEN, ANDROID_FIRMA o ANDROID_FIRMA_CLAVE); ver el README."
+            echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          sha=$(GH_TOKEN="$CODE_TOKEN" gh api "repos/$CODE_REPO/commits/main" --jq .sha)
+          version=$(GH_TOKEN="$CODE_TOKEN" gh api "repos/$CODE_REPO/contents/apps/launcher/package.json?ref=$sha" \
+            -H "Accept: application/vnd.github.raw" | jq -r .version)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          publish=false
+          if info=$(gh release view "v$version" -R "$RELEASES_REPO" --json isDraft,assets \
+              --jq '"\(.isDraft) \([.assets[].name] | (index("latest.yml") != null) and (index("movil.json") != null) and (index("batocera.txt") != null))"' 2>/dev/null); then
+            if [ "$info" = "false true" ]; then
+              echo "La versión v$version ya está publicada."
+            else
+              echo "v$version existe pero está incompleta ($info); se completa."
+              echo "mode=complete" >> "$GITHUB_OUTPUT"
+              publish=true
+            fi
+          else
+            echo "Versión nueva: v$version."
+            echo "mode=create" >> "$GITHUB_OUTPUT"
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ needs.decide.outputs.sha }}
+          token: ${{ secrets.CODIGO_TOKEN }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@rda/launcher..." run build
+      # Caché de Electron y de las herramientas de electron-builder entre ejecuciones.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-builder-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: electron-builder-${{ runner.os }}-
+
+      - name: Generar instalador
+        working-directory: apps/launcher
+        run: |
+          # Las descargas de herramientas (Electron, NSIS, rcedit) desde GitHub a veces dan
+          # 504 pasajeros: hasta 4 intentos. Las ya descargadas quedan en la caché.
+          for intento in 1 2 3 4; do
+            if pnpm exec electron-builder --win --publish never; then break; fi
+            if [ "$intento" = 4 ]; then exit 1; fi
+            echo "Intento $intento fallido; reintentando en $((intento * 30)) s..."
+            sleep $((intento * 30))
+          done
+          ls release
+          # latest.yml es lo que leen los launchers instalados para saber si hay versión nueva.
+          test -f release/latest.yml
+
+      # Publicamos con gh y no con electron-builder: así la etiqueta se crea sobre la rama
+      # principal del repo de descargas (electron-builder intenta usar el commit de este repo).
+      - name: Publicar v${{ needs.decide.outputs.version }} (Windows)
+        if: needs.decide.outputs.publish == 'true'
+        working-directory: apps/launcher/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+          NOTES: >-
+            PC (Windows): descarga el archivo .exe de abajo y ábrelo. Android: descarga
+            Reliquias-del-Alma-Android.apk y ábrelo en el teléfono. Batocera (Raspberry Pi):
+            descarga Reliquias-del-Alma-Batocera.zip y copia lo que trae en roms/ports. Si ya tienes
+            el juego instalado, se actualiza solo. / PC (Windows): download the .exe file below and run it. Android:
+            download Reliquias-del-Alma-Android.apk and open it on your phone. Batocera (Raspberry
+            Pi): download Reliquias-del-Alma-Batocera.zip and copy its contents into roms/ports. If
+            the game is already installed, it updates itself.
+          MODE: ${{ needs.decide.outputs.mode }}
+        run: |
+          # Copia con nombre fijo: así el enlace .../releases/latest/download/Reliquias-del-Alma-Setup.exe
+          # siempre descarga el instalador más reciente (los launchers instalados usan latest.yml).
+          cp "Reliquias-del-Alma-Setup-$VERSION.exe" Reliquias-del-Alma-Setup.exe
+          files=("Reliquias-del-Alma-Setup-$VERSION.exe" "Reliquias-del-Alma-Setup-$VERSION.exe.blockmap" latest.yml Reliquias-del-Alma-Setup.exe)
+          if [ "$MODE" = "complete" ]; then
+            gh release upload "v$VERSION" -R "$RELEASES_REPO" --clobber "${files[@]}"
+            gh release edit "v$VERSION" -R "$RELEASES_REPO" --draft=false --latest --target main \
+              --title "Reliquias del Alma v$VERSION" --notes "$NOTES"
+          else
+            gh release create "v$VERSION" -R "$RELEASES_REPO" --latest \
+              --title "Reliquias del Alma v$VERSION" --notes "$NOTES" "${files[@]}"
+          fi
+
+  # Va después de Windows: así la release ya existe y solo se le añaden los archivos de Android.
+  android:
+    needs: [decide, windows]
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ needs.decide.outputs.sha }}
+          token: ${{ secrets.CODIGO_TOKEN }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      # El contenido web (la misma interfaz del PC) y su copia dentro del proyecto Android.
+      - run: pnpm --filter "@rda/mobile..." run build
+      - run: pnpm exec cap sync android
+        working-directory: apps/mobile
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('apps/mobile/android/**/*.gradle', 'apps/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Compilar el .apk
+        id: apk
+        working-directory: apps/mobile/android
+        env:
+          FIRMA: ${{ secrets.ANDROID_FIRMA }}
+          RDA_FIRMA_CLAVE: ${{ secrets.ANDROID_FIRMA_CLAVE }}
+        run: |
+          # Capacitor 8 necesita Java 21 (ya viene instalado en las máquinas de GitHub).
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          # La clave de firma llega por secretos (docs/ANDROID.md). Sin ella se firma con la de
+          # depuración: vale para comprobar en PRs, pero ese .apk no se publica.
+          if [ -n "$FIRMA" ] && [ -n "$RDA_FIRMA_CLAVE" ]; then
+            echo "$FIRMA" | base64 -d > "$RUNNER_TEMP/reliquias.jks"
+            export RDA_FIRMA_ARCHIVO="$RUNNER_TEMP/reliquias.jks"
+            echo "firmado=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Faltan los secretos ANDROID_FIRMA / ANDROID_FIRMA_CLAVE: el .apk no se publicará (ver docs/ANDROID.md)."
+            echo "firmado=false" >> "$GITHUB_OUTPUT"
+          fi
+          for intento in 1 2 3; do
+            if ./gradlew --no-daemon assembleRelease; then break; fi
+            if [ "$intento" = 3 ]; then exit 1; fi
+            echo "Intento $intento fallido; reintentando en $((intento * 30)) s..."
+            sleep $((intento * 30))
+          done
+
+      - name: Preparar archivos de la release
+        run: |
+          mkdir -p salida
+          version=$(node -p "require('./apps/launcher/package.json').version")
+          native=$(node -p "require('./apps/mobile/package.json').version")
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            salida/Reliquias-del-Alma-Android.apk
+          # Contenido web para la actualización sin reinstalar (index.html en la raíz del zip).
+          (cd apps/mobile/dist && zip -qr "../../../salida/movil-web-$version.zip" .)
+          sum=$(sha256sum "salida/movil-web-$version.zip" | cut -d' ' -f1)
+          base="https://github.com/$RELEASES_REPO/releases/download/v$version"
+          node -e '
+            const [version, nativeVersion, base, checksum] = process.argv.slice(1);
+            const m = { version, nativeVersion, checksum,
+              bundleUrl: `${base}/movil-web-${version}.zip`,
+              apkUrl: `${base}/Reliquias-del-Alma-Android.apk` };
+            require("fs").writeFileSync("salida/movil.json", JSON.stringify(m, null, 2) + "\n");
+          ' "$version" "$native" "$base" "$sum"
+          cat salida/movil.json
+          ls -la salida
+
+      - name: Publicar en v${{ needs.decide.outputs.version }} (Android)
+        if: needs.decide.outputs.publish == 'true' && steps.apk.outputs.firmado == 'true'
+        working-directory: salida
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          # movil.json va al final: es lo que miran los teléfonos, y para entonces el .apk y el
+          # .zip ya están subidos.
+          gh release upload "v$VERSION" -R "$RELEASES_REPO" --clobber \
+            Reliquias-del-Alma-Android.apk "movil-web-$VERSION.zip"
+          gh release upload "v$VERSION" -R "$RELEASES_REPO" --clobber movil.json
+
+  # Batocera (Raspberry Pi 4/5): el mismo launcher para Linux ARM64, con las bibliotecas que la
+  # consola pueda no tener, y el port que lo instala y actualiza. Va después de Windows, igual que
+  # Android, para añadir sus archivos a la release ya creada.
+  batocera:
+    needs: [decide, windows]
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ needs.decide.outputs.sha }}
+          token: ${{ secrets.CODIGO_TOKEN }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: pnpm --filter "@rda/launcher..." run build
+      # Emulación ARM64 para reunir las bibliotecas dentro de un Ubuntu ARM64.
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Descargar Electron para ARM64
+        working-directory: apps/launcher
+        run: |
+          ev=$(node -p "require('electron/package.json').version")
+          for intento in 1 2 3 4; do
+            if curl -fsSL -o "$RUNNER_TEMP/electron.zip" \
+              "https://github.com/electron/electron/releases/download/v$ev/electron-v$ev-linux-arm64.zip"; then break; fi
+            if [ "$intento" = 4 ]; then exit 1; fi
+            sleep $((intento * 20))
+          done
+          unzip -q "$RUNNER_TEMP/electron.zip" -d "$RUNNER_TEMP/electron-arm64"
+
+      - name: Generar la carpeta del juego (Linux ARM64)
+        working-directory: apps/launcher
+        run: |
+          pnpm exec electron-builder --linux dir --arm64 --publish never \
+            -c.electronDist="$RUNNER_TEMP/electron-arm64"
+          test -x release/linux-arm64-unpacked/reliquias-del-alma
+
+      - name: Empaquetar para Batocera
+        working-directory: apps/launcher
+        run: |
+          version=$(node -p "require('./package.json').version")
+          bash batocera/empaquetar.sh release/linux-arm64-unpacked "$version" "$GITHUB_WORKSPACE/salida-batocera"
+
+      - name: Publicar en v${{ needs.decide.outputs.version }} (Batocera)
+        if: needs.decide.outputs.publish == 'true'
+        working-directory: salida-batocera
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          # batocera.txt va al final: es lo que miran las consolas, y para entonces el paquete ya
+          # está subido.
+          gh release upload "v$VERSION" -R "$RELEASES_REPO" --clobber \
+            Reliquias-del-Alma-Batocera-arm64.tar.gz Reliquias-del-Alma-Batocera.zip
+          gh release upload "v$VERSION" -R "$RELEASES_REPO" --clobber batocera.txt
