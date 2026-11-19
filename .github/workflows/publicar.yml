@@ -14,6 +14,11 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      solo_web:
+        description: "Volver a publicar solo la versión web (GitHub Pages) del main actual"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -156,7 +161,7 @@ jobs:
   # Settings -> Pages -> Source = GitHub Actions.
   web:
     needs: decide
-    if: needs.decide.outputs.publish == 'true'
+    if: needs.decide.outputs.publish == 'true' || inputs.solo_web
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -183,11 +188,16 @@ jobs:
       - run: pnpm --filter "@rda/mobile^..." run build
       - run: pnpm run build:web
         working-directory: apps/mobile
+      # Nombre por intento: al relanzar un trabajo fallido, el artefacto del intento anterior
+      # sigue en la misma ejecución y deploy-pages no sabría cuál usar.
       - uses: actions/upload-pages-artifact@v4
         with:
           path: apps/mobile/dist-web
+          name: github-pages-${{ github.run_attempt }}
       - id: deploy
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
 
   android:
     needs: [decide, windows]
