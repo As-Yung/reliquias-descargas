@@ -2,6 +2,18 @@
 
 Descargas oficiales del juego. Cuando lo tienes instalado, se actualiza solo.
 
+## Jugar en el navegador (sin instalar)
+
+**https://as-yung.github.io/reliquias-descargas/**
+
+Funciona en el navegador del PC, Android, iPhone y iPad, con la misma cuenta y el mismo progreso.
+
+- **Android (Chrome):** toca **Instalar** cuando aparezca el aviso para jugar en pantalla completa y abrirlo desde un icono.
+- **iPhone / iPad (Safari):** toca **Compartir** → **Añadir a pantalla de inicio**.
+- El juego se ve en horizontal: gira el teléfono.
+
+## Descargas
+
 - **PC (Windows):** [Reliquias-del-Alma-Setup.exe](https://github.com/As-Yung/reliquias-descargas/releases/latest/download/Reliquias-del-Alma-Setup.exe)
 - **Android:** [Reliquias-del-Alma-Android.apk](https://github.com/As-Yung/reliquias-descargas/releases/latest/download/Reliquias-del-Alma-Android.apk)
 - **Batocera (Raspberry Pi):** [Reliquias-del-Alma-Batocera.zip](https://github.com/As-Yung/reliquias-descargas/releases/latest/download/Reliquias-del-Alma-Batocera.zip)
@@ -10,8 +22,9 @@ Descargas oficiales del juego. Cuando lo tienes instalado, se actualiza solo.
 
 El flujo [`publicar.yml`](.github/workflows/publicar.yml) compila el juego a partir de su código, que está en un repo privado. Corre en este repo público porque aquí GitHub Actions no gasta minutos.
 
-- Cada 30 minutos mira si hay una versión nueva del juego y, si la hay, la publica sola.
-- También se puede lanzar a mano: **Actions → Publicar el juego → Run workflow**.
+- Cada 30 minutos mira si hay una versión nueva del juego y, si la hay, la publica sola: el .exe, el .apk y Batocera como release, y la versión web en GitHub Pages.
+- También se puede lanzar a mano: **Actions → Publicar el juego → Run workflow**. Marcando **solo_web** vuelve a publicar solo la página web.
+- La página web necesita **Settings → Pages → Source = GitHub Actions** (ya está puesto).
 
 El flujo necesita estos secretos, en **Settings → Secrets and variables → Actions**:
 
