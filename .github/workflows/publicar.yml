@@ -1,7 +1,7 @@
-name: Publicar el juego (Windows, Android y Batocera)
+name: Publicar el juego (Windows, Android, web y Batocera)
 
 # Compila el instalador .exe, la app de Android (.apk + contenido web para la actualización
-# automática) y la versión de Batocera a partir del código del repo privado
+# automática), la versión web (GitHub Pages) y la versión de Batocera a partir del código del repo privado
 # As-Yung/furia_ninja_propio, y los publica como release de ESTE repo público. Corre aquí y no en
 # el repo privado porque en los repos públicos GitHub Actions no gasta minutos.
 #
@@ -150,6 +150,45 @@ jobs:
           fi
 
   # Va después de Windows: así la release ya existe y solo se le añaden los archivos de Android.
+  # Versión web (navegador de PC, Android y iPhone/iPad) en GitHub Pages de este repo:
+  # https://as-yung.github.io/reliquias-descargas/ (guía: docs/WEB.md en el repo del juego).
+  # Es la misma interfaz que va dentro del .apk; no expone nada nuevo. Requiere, una sola vez,
+  # Settings -> Pages -> Source = GitHub Actions.
+  web:
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ needs.decide.outputs.sha }}
+          token: ${{ secrets.CODIGO_TOKEN }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: pnpm --filter "@rda/mobile^..." run build
+      - run: pnpm run build:web
+        working-directory: apps/mobile
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: apps/mobile/dist-web
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
   android:
     needs: [decide, windows]
     if: needs.decide.outputs.publish == 'true'
