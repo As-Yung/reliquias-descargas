@@ -165,6 +165,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       pages: write
       id-token: write
     environment:
@@ -194,6 +195,19 @@ jobs:
         with:
           path: apps/mobile/dist-web
           name: github-pages-${{ github.run_attempt }}
+      # La API de GitHub a veces tarda unos segundos en «ver» el artefacto recién subido y
+      # deploy-pages falla con «No artifacts named ... were found». Esperamos a que aparezca.
+      - name: Esperar a que el artefacto de Pages sea visible
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOMBRE: github-pages-${{ github.run_attempt }}
+        run: |
+          for i in $(seq 1 24); do
+            n=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?name=$NOMBRE" --jq '.total_count' || echo 0)
+            if [ "${n:-0}" -gt 0 ]; then echo "Artefacto visible (intento $i)"; exit 0; fi
+            sleep 5
+          done
+          echo "El artefacto no apareció en 2 minutos; se intenta desplegar igualmente"
       - id: deploy
         uses: actions/deploy-pages@v4
         with:
